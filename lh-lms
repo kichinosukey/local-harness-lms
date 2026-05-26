@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_URL="http://127.0.0.1:1234"
+AUTH_TOKEN="dummy"
+LMS_BIN="${LMS_BIN:-/Users/kichinosukey-mba/.lmstudio/bin/lms}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  lh-lms claude <profile> [--] [claude args...]
+  lh-lms list profiles
+  lh-lms list harnesses
+  lh-lms env claude <profile>
+  lh-lms doctor claude <profile>
+  lh-lms load-command <profile>
+
+Profiles:
+  gemma  lightweight read-only / brainstorming / handoff reading
+  qwen   heavy evaluation only; not recommended for daily use
+USAGE
+}
+
+profile_identifier() {
+  case "${1:-}" in
+    gemma) printf '%s\n' "gemma-4-e4b-128k" ;;
+    qwen) printf '%s\n' "qwen3.6-27b-mlx-98k" ;;
+    *) return 1 ;;
+  esac
+}
+
+profile_model_key() {
+  case "${1:-}" in
+    gemma) printf '%s\n' "gemma-4-e4b-it" ;;
+    qwen) printf '%s\n' "qwen3.6-27b-mlx" ;;
+    *) return 1 ;;
+  esac
+}
+
+profile_context_length() {
+  case "${1:-}" in
+    gemma) printf '%s\n' "131072" ;;
+    qwen) printf '%s\n' "100352" ;;
+    *) return 1 ;;
+  esac
+}
+
+require_profile() {
+  if ! profile_identifier "$1" >/dev/null; then
+    printf 'Unknown profile: %s\n\n' "$1" >&2
+    usage >&2
+    exit 2
+  fi
+}
+
+require_harness() {
+  case "${1:-}" in
+    claude) ;;
+    codex)
+      printf 'Harness codex is planned / not implemented.\n' >&2
+      exit 2
+      ;;
+    *)
+      printf 'Unknown harness: %s\n\n' "${1:-}" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+print_env() {
+  local harness="$1"
+  local profile="$2"
+  require_harness "$harness"
+  require_profile "$profile"
+
+  printf 'ANTHROPIC_BASE_URL=%s\n' "$BASE_URL"
+  printf 'ANTHROPIC_AUTH_TOKEN=%s\n' "$AUTH_TOKEN"
+  printf 'ANTHROPIC_MODEL=%s\n' "$(profile_identifier "$profile")"
+  printf 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n'
+}
+
+print_load_command() {
+  local profile="$1"
+  require_profile "$profile"
+
+  printf 'lms load %s --context-length %s --identifier %s\n' \
+    "$(profile_model_key "$profile")" \
+    "$(profile_context_length "$profile")" \
+    "$(profile_identifier "$profile")"
+}
+
+command_status() {
+  local label="$1"
+  local command_name="$2"
+
+  if command -v "$command_name" >/dev/null 2>&1; then
+    printf 'ok - %s: %s\n' "$label" "$(command -v "$command_name")"
+  else
+    printf 'warn - %s: not found\n' "$label"
+  fi
+}
+
+lms_status() {
+  if [[ -x "$LMS_BIN" ]]; then
+    printf 'ok - lms command: %s\n' "$LMS_BIN"
+  elif command -v lms >/dev/null 2>&1; then
+    printf 'ok - lms command: %s\n' "$(command -v lms)"
+  else
+    printf 'warn - lms command: not found; set LMS_BIN if needed\n'
+  fi
+}
+
+listen_status() {
+  if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:1234 -sTCP:LISTEN >/dev/null 2>&1; then
+    printf 'ok - 127.0.0.1:1234: listening\n'
+  else
+    printf 'warn - 127.0.0.1:1234: not confirmed listening\n'
+  fi
+}
+
+doctor() {
+  local harness="$1"
+  local profile="$2"
+  require_harness "$harness"
+  require_profile "$profile"
+
+  printf 'ok - harness %s: supported\n' "$harness"
+  printf 'ok - profile %s: %s\n' "$profile" "$(profile_identifier "$profile")"
+  command_status "claude command" claude
+  lms_status
+  listen_status
+  printf 'info - load command: '
+  print_load_command "$profile"
+}
+
+run_claude() {
+  local profile="$1"
+  shift || true
+  require_profile "$profile"
+
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+
+  if [[ "$profile" == "qwen" ]]; then
+    printf 'warning: qwen is for heavy evaluation only and is not recommended for daily use.\n' >&2
+  fi
+
+  local timestamp
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  local debug_file="${LH_LMS_DEBUG_FILE:-/tmp/lh-lms-claude-${profile}-${timestamp}.log}"
+
+  export ANTHROPIC_BASE_URL="$BASE_URL"
+  export ANTHROPIC_AUTH_TOKEN="$AUTH_TOKEN"
+  export ANTHROPIC_MODEL
+  ANTHROPIC_MODEL="$(profile_identifier "$profile")"
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+  exec claude --model "$ANTHROPIC_MODEL" --debug-file "$debug_file" "$@"
+}
+
+main() {
+  case "${1:-}" in
+    claude)
+      shift
+      [[ $# -ge 1 ]] || { usage >&2; exit 2; }
+      run_claude "$@"
+      ;;
+    list)
+      case "${2:-}" in
+        profiles)
+          printf 'gemma\tgemma-4-e4b-128k\tlightweight read-only / brainstorming / handoff reading\n'
+          printf 'qwen\tqwen3.6-27b-mlx-98k\theavy evaluation only; not recommended for daily use\n'
+          ;;
+        harnesses)
+          printf 'claude\tsupported\n'
+          printf 'codex\tplanned / not implemented\n'
+          ;;
+        *) usage >&2; exit 2 ;;
+      esac
+      ;;
+    env)
+      [[ $# -eq 3 ]] || { usage >&2; exit 2; }
+      print_env "$2" "$3"
+      ;;
+    doctor)
+      [[ $# -eq 3 ]] || { usage >&2; exit 2; }
+      doctor "$2" "$3"
+      ;;
+    load-command)
+      [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+      print_load_command "$2"
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
