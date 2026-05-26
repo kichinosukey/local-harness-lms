@@ -11,8 +11,14 @@ This tool does not reimplement Claude Code, LM Studio, an Anthropic/OpenAI API t
 Clone or copy this repository, then put `lh-lms` on your `PATH`.
 
 ```bash
-chmod +x lh-lms
-./lh-lms list profiles
+./install.sh
+lh-lms list profiles
+```
+
+By default, `install.sh` installs to `~/.local/bin/lh-lms`. To install somewhere else:
+
+```bash
+INSTALL_DIR=/path/to/bin ./install.sh
 ```
 
 LM Studio should be serving on:
